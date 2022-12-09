@@ -50,7 +50,16 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 // Transactional API.
 func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
 	// Your Code Here (4B).
-	return nil, nil
+	ctx := req.GetContext()
+	reader, err := server.storage.Reader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	val, err := reader.GetCF("", req.GetKey())
+	if err != nil {
+		return nil, err
+	}
+	return &kvrpcpb.GetResponse{Value: val}, nil
 }
 
 func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
