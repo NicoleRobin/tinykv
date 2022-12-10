@@ -20,16 +20,18 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 		log.Errorf("storage.Reader() failed, err:%+v", err)
 		return nil, err
 	}
+	defer reader.Close()
 
 	resp := &kvrpcpb.RawGetResponse{}
 	value, err := reader.GetCF(req.GetCf(), req.GetKey())
-	if err == badger.ErrKeyNotFound {
-		resp.NotFound = true
-		return resp, nil
-	}
 	if err != nil {
-		log.Errorf("reader.GetCF() failed, err:%+v", err)
-		return nil, err
+		if err == badger.ErrKeyNotFound {
+			resp.NotFound = true
+			return resp, nil
+		} else {
+			log.Errorf("reader.GetCF() failed, err:%+v", err)
+			return nil, err
+		}
 	}
 
 	resp.Value = value

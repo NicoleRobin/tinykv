@@ -88,19 +88,9 @@ type standaloneReader struct {
 
 func (s *standaloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 	var value []byte
-	err := s.inner.db.View(func(txn *badger.Txn) error {
-		item, err := txn.Get(engine_util.KeyWithCF(cf, key))
-		if err != nil {
-			log.Errorf("txn.Get() failed, key:%s, err:%+v", engine_util.KeyWithCF(cf, key), err)
-			return err
-		}
-
-		value, err = item.Value()
-		if err != nil {
-			log.Errorf("item.Value() failed, err:%+v", err)
-			return err
-		}
-		return nil
+	err := s.inner.db.View(func(txn *badger.Txn) (err error) {
+		value, err = engine_util.GetCFFromTxn(txn, cf, key)
+		return err
 	})
 	if err != nil {
 		log.Errorf("db.View() failed, err:%+v", err)
