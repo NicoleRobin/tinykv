@@ -92,9 +92,8 @@ func (s *standaloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 		value, err = engine_util.GetCFFromTxn(txn, cf, key)
 		return err
 	})
-	if err != nil {
-		log.Errorf("db.View() failed, err:%+v", err)
-		return nil, err
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
 	}
 	return value, nil
 }
