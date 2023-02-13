@@ -110,7 +110,7 @@ type Progress struct {
 type Raft struct {
 	id uint64
 
-	Term uint64
+	Term uint64 // Term是任期，每完成一次选举就加1
 	Vote uint64
 
 	// the log
@@ -176,6 +176,7 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
 		Prs:              prs,
+		votes:            make(map[uint64]bool),
 	}
 }
 
@@ -211,6 +212,17 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	r.msgs = append(r.msgs, msg)
 }
 
+// sendVote sends a vote req RPC to the given peer
+func (r *Raft) sendVote(to uint64) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVote,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
@@ -229,9 +241,20 @@ func (r *Raft) tick() {
 		}
 	}
 
-	// 2、
+	// 2、心跳超时，则主动发起选举
 	r.electionElapsed++
-	if r.electionElapsed > r.electionTimeout {
+	if r.electionElapsed >= r.electionTimeout {
+		r.becomeCandidate()
+		r.electionElapsed = 0
+		r.Vote = r.id
+		r.votes[r.id] = true
+
+		for peer := range r.Prs {
+			if peer == r.id {
+				continue
+			}
+			r.sendVote(peer)
+		}
 	}
 }
 
@@ -247,6 +270,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	r.State = StateCandidate
+	r.Term++
 }
 
 // becomeLeader transform this peer's state to leader
@@ -255,6 +279,7 @@ func (r *Raft) becomeLeader() {
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
 	r.Term++
+	r.heartbeatElapsed = 0
 }
 
 // Step the entrance of handle message, see `MessageType`
