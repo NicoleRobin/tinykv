@@ -111,7 +111,7 @@ type Raft struct {
 	id uint64
 
 	Term uint64 // Term是任期，每完成一次选举就加1
-	Vote uint64
+	Vote uint64 // 记录此次选举投票给了哪个node
 
 	// the log
 	RaftLog *RaftLog
@@ -176,7 +176,9 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
 		Prs:              prs,
+		State:            StateFollower,
 		votes:            make(map[uint64]bool),
+		msgs:             make([]pb.Message, 0),
 	}
 }
 
@@ -223,11 +225,23 @@ func (r *Raft) sendVote(to uint64) {
 	r.msgs = append(r.msgs, msg)
 }
 
+// sendVodeResp sends a vote resp to the given peer
+func (r *Raft) sendVoteResp(to uint64, reject bool) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Reject:  reject,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
 	// 在该函数中需要做的事情：
-	// 1、在heartbeatTimeout时间到的时候发送heartbeat心跳
+	// 1、leader在heartbeatTimeout时间到的时候发送heartbeat心跳
 	r.heartbeatElapsed++
 	if r.State == StateLeader {
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
@@ -241,13 +255,12 @@ func (r *Raft) tick() {
 		}
 	}
 
-	// 2、心跳超时，则主动发起选举
 	r.electionElapsed++
 	if r.electionElapsed >= r.electionTimeout {
-		r.becomeCandidate()
 		r.electionElapsed = 0
-		r.Vote = r.id
-		r.votes[r.id] = true
+		if r.State == StateFollower || r.State == StateCandidate {
+			r.becomeCandidate()
+		}
 
 		for peer := range r.Prs {
 			if peer == r.id {
@@ -271,6 +284,12 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	r.State = StateCandidate
 	r.Term++
+	r.Vote = r.id
+	r.votes[r.id] = true
+
+	if r.isMajority() {
+		r.becomeLeader()
+	}
 }
 
 // becomeLeader transform this peer's state to leader
@@ -278,29 +297,61 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.State = StateLeader
-	r.Term++
 	r.heartbeatElapsed = 0
+	r.electionElapsed = 0
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	if m.Term <= r.Term {
-		return nil
-	}
-
 	switch m.MsgType {
-	case pb.MessageType_MsgAppend, pb.MessageType_MsgRequestVote, pb.MessageType_MsgHeartbeat:
+	case pb.MessageType_MsgHup:
+		r.becomeCandidate()
+	case pb.MessageType_MsgRequestVote:
+		if r.Vote != 0 {
+			if r.Vote == m.From {
+				r.sendVoteResp(m.From, false)
+			} else {
+				r.sendVoteResp(m.From, true)
+			}
+		} else {
+			r.Vote = m.From
+			r.sendVoteResp(m.From, false)
+		}
+	case pb.MessageType_MsgAppend, pb.MessageType_MsgHeartbeat:
 		if (r.State == StateCandidate || r.State == StateLeader) && r.Term < m.Term {
 			r.State = StateFollower
 		}
 		r.Term = m.Term
 		r.msgs = append(r.msgs, m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		if r.State == StateCandidate {
+			r.votes[m.From] = !m.Reject
+		}
+
+		if r.isMajority() {
+			// 获得大多数投票，成为leader
+			r.becomeLeader()
+		}
 	default:
 
 	}
 	return nil
+}
+
+func (r *Raft) isMajority() bool {
+	voteCount := 0
+	for _, vote := range r.votes {
+		if vote {
+			voteCount++
+		}
+	}
+	if voteCount > len(r.Prs)/2 {
+		// 获得大多数投票，成为leader
+		return true
+	}
+	return false
 }
 
 // handleAppendEntries handle AppendEntries RPC request
