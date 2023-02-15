@@ -320,7 +320,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.sendVoteResp(m.From, false)
 		}
 	case pb.MessageType_MsgAppend, pb.MessageType_MsgHeartbeat:
-		if (r.State == StateCandidate || r.State == StateLeader) && r.Term < m.Term {
+		if (r.State == StateCandidate || r.State == StateLeader) && r.Term <= m.Term {
 			r.State = StateFollower
 		}
 		r.Term = m.Term
