@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -135,6 +136,7 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+	currentET       int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -174,6 +176,7 @@ func newRaft(c *Config) *Raft {
 	return &Raft{
 		id:               c.ID,
 		electionTimeout:  c.ElectionTick,
+		currentET:        c.ElectionTick + rand.Intn(c.ElectionTick),
 		heartbeatTimeout: c.HeartbeatTick,
 		Prs:              prs,
 		State:            StateFollower,
@@ -256,7 +259,7 @@ func (r *Raft) tick() {
 	}
 
 	r.electionElapsed++
-	if r.electionElapsed >= r.electionTimeout {
+	if r.electionElapsed >= r.currentET {
 		r.electionElapsed = 0
 		if r.State == StateFollower || r.State == StateCandidate {
 			r.becomeCandidate()
@@ -287,6 +290,11 @@ func (r *Raft) becomeCandidate() {
 	r.Vote = r.id
 	r.votes[r.id] = true
 
+	// 生成随机的election timeout
+	// 随机时间该在什么范围内呢？参考文档中只提到
+	r.currentET = r.electionTimeout + rand.Intn(r.electionTimeout+1)
+
+	// 这里直接判断是考虑到集群只有一个节点的情况
 	if r.isMajority() {
 		r.becomeLeader()
 	}
@@ -307,7 +315,6 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		r.becomeCandidate()
 	case pb.MessageType_MsgRequestVote:
 		if r.Vote != 0 {
 			if r.Vote == m.From {

@@ -272,6 +272,8 @@ func TestCandidateElectionTimeoutRandomized2AA(t *testing.T) {
 	testNonleaderElectionTimeoutRandomized(t, StateCandidate)
 }
 
+// 随机选举超时是为了解决split vote的情况
+// # TODO: 随机时间在什么时候生成呢？
 // testNonleaderElectionTimeoutRandomized tests that election timeout for
 // follower or candidate is randomized.
 // Reference: section 5.2
@@ -288,13 +290,20 @@ func testNonleaderElectionTimeoutRandomized(t *testing.T, state StateType) {
 		}
 
 		time := 0
-		for len(r.readMessages()) == 0 {
+		msgs := r.readMessages()
+		for ; len(msgs) == 0; msgs = r.readMessages() {
 			r.tick()
 			time++
 		}
 		timeouts[time] = true
+		// t.Logf("round:%d, timeouts:%+v", round, timeouts)
+		if time == 1 {
+			t.Logf("round:%d, msgs:%+v", round, msgs)
+		}
 	}
 
+	// 断言et至2*et之间都是true？
+	// t.Logf("timeouts:%+v", timeouts)
 	for d := et + 1; d < 2*et; d++ {
 		if !timeouts[d] {
 			t.Errorf("timeout in %d ticks should happen", d)
@@ -305,6 +314,7 @@ func testNonleaderElectionTimeoutRandomized(t *testing.T, state StateType) {
 func TestFollowersElectionTimeoutNonconflict2AA(t *testing.T) {
 	testNonleadersElectionTimeoutNonconflict(t, StateFollower)
 }
+
 func TestCandidatesElectionTimeoutNonconflict2AA(t *testing.T) {
 	testNonleadersElectionTimeoutNonconflict(t, StateCandidate)
 }
