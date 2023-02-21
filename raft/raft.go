@@ -249,12 +249,7 @@ func (r *Raft) tick() {
 	if r.State == StateLeader {
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			for peer := range r.Prs {
-				if peer == r.id {
-					continue
-				}
-				r.sendHeartbeat(peer)
-			}
+			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgBeat})
 		}
 	}
 
@@ -262,14 +257,7 @@ func (r *Raft) tick() {
 	if r.electionElapsed >= r.currentET {
 		r.electionElapsed = 0
 		if r.State == StateFollower || r.State == StateCandidate {
-			r.becomeCandidate()
-		}
-
-		for peer := range r.Prs {
-			if peer == r.id {
-				continue
-			}
-			r.sendVote(peer)
+			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgHup})
 		}
 	}
 }
@@ -287,17 +275,7 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	r.State = StateCandidate
 	r.Term++
-	r.Vote = r.id
-	r.votes[r.id] = true
 
-	// 生成随机的election timeout
-	// 随机时间该在什么范围内呢？参考文档中只提到
-	r.currentET = r.electionTimeout + rand.Intn(r.electionTimeout+1)
-
-	// 这里直接判断是考虑到集群只有一个节点的情况
-	if r.isMajority() {
-		r.becomeLeader()
-	}
 }
 
 // becomeLeader transform this peer's state to leader
@@ -314,24 +292,59 @@ func (r *Raft) becomeLeader() {
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch m.MsgType {
+	// local message
 	case pb.MessageType_MsgHup:
-	case pb.MessageType_MsgRequestVote:
-		if r.Vote != 0 {
-			if r.Vote == m.From {
-				r.sendVoteResp(m.From, false)
-			} else {
-				r.sendVoteResp(m.From, true)
+		if r.State != StateLeader {
+			r.becomeCandidate()
+
+			// 给自己投票
+			r.Vote = r.id
+			r.votes[r.id] = true
+
+			// 发起投票
+			for peer := range r.Prs {
+				if peer == r.id {
+					continue
+				}
+				r.sendVote(peer)
 			}
-		} else {
-			r.Vote = m.From
-			r.sendVoteResp(m.From, false)
+
+			// 这里直接判断是考虑到集群只有一个节点的情况
+			if r.isMajority() {
+				r.becomeLeader()
+			}
+
+			// 生成随机的election timeout
+			// 随机时间该在什么范围内呢？参考文档中只提到
+			r.currentET = r.electionTimeout + rand.Intn(r.electionTimeout+1)
+		}
+	case pb.MessageType_MsgBeat:
+		if r.State == StateLeader {
+			for peerId, _ := range r.Prs {
+				if peerId == r.id {
+					continue
+				}
+				r.sendHeartbeat(peerId)
+			}
+		}
+	case pb.MessageType_MsgRequestVote:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+			if r.Vote != 0 {
+				if r.Vote == m.From {
+					r.sendVoteResp(m.From, false)
+				} else {
+					r.sendVoteResp(m.From, true)
+				}
+			} else {
+				r.Vote = m.From
+				r.sendVoteResp(m.From, false)
+			}
 		}
 	case pb.MessageType_MsgAppend, pb.MessageType_MsgHeartbeat:
-		if (r.State == StateCandidate || r.State == StateLeader) && r.Term <= m.Term {
-			r.State = StateFollower
+		if r.Term <= m.Term {
+			r.becomeFollower(m.Term, m.From)
 		}
-		r.Term = m.Term
-		r.msgs = append(r.msgs, m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		if r.State == StateCandidate {
 			r.votes[m.From] = !m.Reject
