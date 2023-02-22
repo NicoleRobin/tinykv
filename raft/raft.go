@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -112,6 +113,7 @@ type Raft struct {
 	id uint64
 
 	Term uint64 // Term是任期，每完成一次选举就加1
+	// #TODO: 该vote什么时候重置呢？
 	Vote uint64 // 记录此次选举投票给了哪个node
 
 	// the log
@@ -249,7 +251,10 @@ func (r *Raft) tick() {
 	if r.State == StateLeader {
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
-			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgBeat})
+			err := r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgBeat})
+			if err != nil {
+				log.Errorf("r.Step() failed, err:%s", err)
+			}
 		}
 	}
 
@@ -257,7 +262,10 @@ func (r *Raft) tick() {
 	if r.electionElapsed >= r.currentET {
 		r.electionElapsed = 0
 		if r.State == StateFollower || r.State == StateCandidate {
-			r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgHup})
+			err := r.Step(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgHup})
+			if err != nil {
+				log.Errorf("r.Step() failed, err:%s", err)
+			}
 		}
 	}
 }
@@ -301,17 +309,17 @@ func (r *Raft) Step(m pb.Message) error {
 			r.Vote = r.id
 			r.votes[r.id] = true
 
+			// 这里直接判断是考虑到集群只有一个节点的情况
+			if r.isMajority() {
+				r.becomeLeader()
+			}
+
 			// 发起投票
 			for peer := range r.Prs {
 				if peer == r.id {
 					continue
 				}
 				r.sendVote(peer)
-			}
-
-			// 这里直接判断是考虑到集群只有一个节点的情况
-			if r.isMajority() {
-				r.becomeLeader()
 			}
 
 			// 生成随机的election timeout
@@ -328,18 +336,22 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 	case pb.MessageType_MsgRequestVote:
-		if m.Term >= r.Term {
-			r.becomeFollower(m.Term, m.From)
-			if r.Vote != 0 {
-				if r.Vote == m.From {
-					r.sendVoteResp(m.From, false)
-				} else {
-					r.sendVoteResp(m.From, true)
-				}
-			} else {
+		// #TODO: 怎么实现一个term之内只能投递一次呢？
+		// term在什么时候更新？vote在什么时候重置？
+		if m.Term == r.Term {
+			if r.Vote == None {
+				r.becomeFollower(m.Term, m.From)
 				r.Vote = m.From
 				r.sendVoteResp(m.From, false)
+			} else if r.Vote == m.From {
+				r.sendVoteResp(m.From, false)
+			} else {
+				r.sendVoteResp(m.From, true)
 			}
+		} else if m.Term > r.Term {
+			r.becomeFollower(m.Term, m.From)
+			r.Vote = m.From
+			r.sendVoteResp(m.From, false)
 		}
 	case pb.MessageType_MsgAppend, pb.MessageType_MsgHeartbeat:
 		if r.Term <= m.Term {
