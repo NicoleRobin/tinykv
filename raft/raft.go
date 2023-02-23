@@ -177,6 +177,9 @@ func newRaft(c *Config) *Raft {
 	// Your Code Here (2A).
 	return &Raft{
 		id:               c.ID,
+		Term:             None,
+		Vote:             None,
+		RaftLog:          newLog(NewMemoryStorage()),
 		electionTimeout:  c.ElectionTick,
 		currentET:        c.ElectionTick + rand.Intn(c.ElectionTick),
 		heartbeatTimeout: c.HeartbeatTick,
@@ -192,13 +195,19 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	msg := pb.Message{
-		MsgType:  pb.MessageType_MsgAppend,
-		To:       to,
-		From:     r.id,
-		Term:     r.Term,
-		LogTerm:  0,
-		Index:    0,
-		Entries:  []*pb.Entry{},
+		MsgType: pb.MessageType_MsgAppend,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		LogTerm: 0,
+		Index:   0,
+		Entries: []*pb.Entry{
+			{
+				EntryType: pb.EntryType_EntryNormal,
+				Term:      r.Term,
+				Index:     0,
+			},
+		},
 		Commit:   0,
 		Snapshot: nil,
 		Reject:   false,
@@ -335,6 +344,14 @@ func (r *Raft) Step(m pb.Message) error {
 				r.sendHeartbeat(peerId)
 			}
 		}
+	case pb.MessageType_MsgHeartbeat:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+	case pb.MessageType_MsgAppend:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
 	case pb.MessageType_MsgRequestVote:
 		// #TODO: 怎么实现一个term之内只能投递一次呢？
 		// term在什么时候更新？vote在什么时候重置？
@@ -352,10 +369,6 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeFollower(m.Term, m.From)
 			r.Vote = m.From
 			r.sendVoteResp(m.From, false)
-		}
-	case pb.MessageType_MsgAppend, pb.MessageType_MsgHeartbeat:
-		if r.Term <= m.Term {
-			r.becomeFollower(m.Term, m.From)
 		}
 	case pb.MessageType_MsgRequestVoteResponse:
 		if r.State == StateCandidate {
