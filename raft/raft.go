@@ -199,13 +199,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		LogTerm: 0,
+		LogTerm: r.Term,
 		Index:   0,
 		Entries: []*pb.Entry{
 			{
 				EntryType: pb.EntryType_EntryNormal,
 				Term:      r.Term,
-				Index:     0,
+				Index:     r.Term,
 			},
 		},
 		Commit:   0,
@@ -379,8 +379,24 @@ func (r *Raft) Step(m pb.Message) error {
 			// 获得大多数投票，成为leader
 			r.becomeLeader()
 		}
-	default:
+	case pb.MessageType_MsgPropose:
+		// propose
+		for _, entry := range m.Entries {
+			entry.Term = r.Term
+			entry.Index = r.Term
+			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+		}
 
+		for peerId, _ := range r.Prs {
+			if peerId == r.id {
+				continue
+			}
+			r.sendAppend(peerId)
+		}
+	case pb.MessageType_MsgAppendResponse:
+
+	default:
+		log.Errorf("unknown msg type:%+v", m.MsgType)
 	}
 	return nil
 }
