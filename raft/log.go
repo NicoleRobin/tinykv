@@ -106,13 +106,10 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 }
 
 // LastIndex return the last index of the log entries
+// 这里有问题呀，如果是返回最后一个索引，那当entries为空时应该返回-1才对，但是uint64又限制了不能返回负数
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	if len(l.entries) > 0 {
-		return l.entries[len(l.entries)-1].GetIndex()
-	} else {
-		return 0
-	}
+	return uint64(len(l.entries))
 }
 
 // Term return the term of the entry in the given index

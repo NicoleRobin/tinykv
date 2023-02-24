@@ -194,26 +194,30 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	msg := pb.Message{
-		MsgType: pb.MessageType_MsgAppend,
-		To:      to,
-		From:    r.id,
-		Term:    r.Term,
-		LogTerm: r.Term,
-		Index:   0,
-		Entries: []*pb.Entry{
-			{
-				EntryType: pb.EntryType_EntryNormal,
-				Term:      r.Term,
-				Index:     r.Term,
-			},
-		},
-		Commit:   0,
-		Snapshot: nil,
-		Reject:   false,
+	ents := r.RaftLog.unstableEntries()
+	if len(ents) > 0 {
+		mEnts := []*pb.Entry{}
+		for _, ent := range ents {
+			mEnts = append(mEnts, &ent)
+		}
+
+		msg := pb.Message{
+			MsgType:  pb.MessageType_MsgAppend,
+			To:       to,
+			From:     r.id,
+			Term:     r.Term,
+			LogTerm:  r.Term,
+			Index:    r.RaftLog.LastIndex() - (uint64)(len(ents)),
+			Entries:  mEnts,
+			Commit:   r.RaftLog.committed,
+			Snapshot: nil,
+			Reject:   false,
+		}
+		r.msgs = append(r.msgs, msg)
+		return true
+	} else {
+		return false
 	}
-	r.msgs = append(r.msgs, msg)
-	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -387,14 +391,29 @@ func (r *Raft) Step(m pb.Message) error {
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 		}
 
-		for peerId, _ := range r.Prs {
+		if len(r.Prs) == 1 {
+			r.RaftLog.committed += uint64(len(m.Entries))
+		} else {
+			for peerId, progress := range r.Prs {
+				if peerId == r.id {
+					continue
+				}
+				r.sendAppend(peerId)
+				progress.Next = r.RaftLog.LastIndex()
+			}
+		}
+	case pb.MessageType_MsgAppendResponse:
+		r.Prs[m.From].Match = m.Index
+		minMatch := m.Index
+		for peerId, progress := range r.Prs {
 			if peerId == r.id {
 				continue
 			}
-			r.sendAppend(peerId)
+			if progress.Match < minMatch {
+				minMatch = progress.Match
+			}
 		}
-	case pb.MessageType_MsgAppendResponse:
-
+		r.RaftLog.committed = minMatch
 	default:
 		log.Errorf("unknown msg type:%+v", m.MsgType)
 	}
