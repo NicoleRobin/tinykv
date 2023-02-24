@@ -179,7 +179,7 @@ func newRaft(c *Config) *Raft {
 		id:               c.ID,
 		Term:             None,
 		Vote:             None,
-		RaftLog:          newLog(NewMemoryStorage()),
+		RaftLog:          newLog(c.Storage),
 		electionTimeout:  c.ElectionTick,
 		currentET:        c.ElectionTick + rand.Intn(c.ElectionTick),
 		heartbeatTimeout: c.HeartbeatTick,
@@ -396,6 +396,7 @@ func (r *Raft) Step(m pb.Message) error {
 		} else {
 			for peerId, progress := range r.Prs {
 				if peerId == r.id {
+					progress.Next = r.RaftLog.LastIndex()
 					continue
 				}
 				r.sendAppend(peerId)
@@ -414,6 +415,8 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 		r.RaftLog.committed = minMatch
+		r.RaftLog.applied = r.RaftLog.committed
+		r.RaftLog.stabled = r.RaftLog.LastIndex()
 	default:
 		log.Errorf("unknown msg type:%+v", m.MsgType)
 	}
