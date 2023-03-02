@@ -387,7 +387,7 @@ func (r *Raft) Step(m pb.Message) error {
 		// propose
 		for _, entry := range m.Entries {
 			entry.Term = r.Term
-			entry.Index = r.Term
+			entry.Index = r.RaftLog.LastIndex() + 1
 			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
 		}
 
@@ -404,19 +404,15 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 	case pb.MessageType_MsgAppendResponse:
+		// 更新进度
 		r.Prs[m.From].Match = m.Index
 		minMatch := m.Index
-		for peerId, progress := range r.Prs {
-			if peerId == r.id {
-				continue
-			}
+		for _, progress := range r.Prs {
 			if progress.Match < minMatch {
 				minMatch = progress.Match
 			}
 		}
 		r.RaftLog.committed = minMatch
-		r.RaftLog.applied = r.RaftLog.committed
-		r.RaftLog.stabled = r.RaftLog.LastIndex()
 	default:
 		log.Errorf("unknown msg type:%+v", m.MsgType)
 	}
