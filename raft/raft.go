@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
-	"math/rand"
+	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -170,28 +170,29 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 
-	prs := map[uint64]*Progress{}
+	// Your Code Here (2A).
+	raftLog := newLog(c.Storage)
+
+	r := &Raft{
+		id:               c.ID,
+		Lead:             None,
+		RaftLog:          raftLog,
+		Prs:              make(map[uint64]*Progress),
+		electionTimeout:  c.ElectionTick,
+		heartbeatTimeout: c.HeartbeatTick,
+	}
+
 	for _, peerId := range c.peers {
-		prs[peerId] = &Progress{
+		r.Prs[peerId] = &Progress{
 			Next: 1,
 		}
 	}
 
-	// Your Code Here (2A).
-	return &Raft{
-		id:               c.ID,
-		Term:             None,
-		Vote:             None,
-		RaftLog:          newLog(c.Storage),
-		electionTimeout:  c.ElectionTick,
-		currentET:        c.ElectionTick + rand.Intn(c.ElectionTick),
-		heartbeatTimeout: c.HeartbeatTick,
-		Prs:              prs,
-		State:            StateFollower,
-		votes:            make(map[uint64]bool),
-		msgs:             make([]pb.Message, 0),
-		Lead:             None,
+	if c.Applied > 0 {
+		raftLog.appliedTo(c.Applied)
 	}
+	r.becomeFollower(r.Term, None)
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -291,70 +292,71 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
-	r.Lead = lead
-	r.Term = term
-	r.State = StateFollower
 	r.reset(term)
+	r.Lead = lead
+	r.State = StateFollower
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.reset(r.Term + 1)
+	r.Vote = r.id
 	r.State = StateCandidate
-	r.Term++
-	r.reset(r.Term)
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	r.State = StateLeader
-	r.heartbeatElapsed = 0
-	r.electionElapsed = 0
 	r.reset(r.Term)
+	r.Lead = r.id
+	r.State = StateLeader
+
+	r.appendEntries(pb.Entry{Data: nil})
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
-	/*
-		switch r.State {
-		case StateLeader:
-		case StateCandidate:
-		case StateFollower:
-		default:
-			return fmt.Errorf("unexpected raft state:%d", r.State)
-		}
-
-	*/
+	switch {
+	case m.Term == 0:
+	case m.Term > r.Term:
+	case m.Term < r.Term:
+	}
 	switch m.MsgType {
 	// local message
 	case pb.MessageType_MsgHup:
+		var term uint64
 		if r.State != StateLeader {
+			entries := r.RaftLog.nextEnts()
+			if len(entries) > 0 && r.RaftLog.committed > r.RaftLog.applied {
+				return nil
+			}
 			r.becomeCandidate()
+			term = r.Term
 
-			// 给自己投票
-			r.Vote = r.id
-			r.votes[r.id] = true
-
-			// 这里直接判断是考虑到集群只有一个节点的情况
-			if r.isMajority() {
+			if r.quorum() == r.poll(r.id, pb.MessageType_MsgRequestVoteResponse, true) {
 				r.becomeLeader()
+				return nil
 			}
 
-			// 发起投票
-			for peer := range r.Prs {
-				if peer == r.id {
+			for id := range r.Prs {
+				if id == r.id {
 					continue
 				}
-				r.sendVote(peer)
-			}
 
-			// 生成随机的election timeout
-			// 随机时间该在什么范围内呢？参考文档中只提到
-			r.currentET = r.electionTimeout + rand.Intn(r.electionTimeout+1)
+				r.send(pb.Message{
+					Term:    term,
+					To:      id,
+					MsgType: pb.MessageType_MsgRequestVote,
+					Index:   r.RaftLog.LastIndex(),
+					LogTerm: r.RaftLog.LastTerm(),
+				})
+			}
+		} else {
+			log.Panicf("%x ignoring MsgHup because already leader", r.id)
 		}
 	case pb.MessageType_MsgBeat:
 		if r.State == StateLeader {
@@ -433,15 +435,30 @@ func (r *Raft) Step(m pb.Message) error {
 }
 
 func (r *Raft) stepLeader(m pb.Message) error {
+	pr, prOK := r.Prs[m.From]
+	if !prOK {
+		return nil
+	}
+
 	switch m.MsgType {
+	case pb.MessageType_MsgBeat:
+		r.bcastHeartbeat()
+		return nil
 	case pb.MessageType_MsgPropose:
 		for _, entry := range m.Entries {
 			if entry.EntryType == pb.EntryType_EntryConfChange {
 			}
 		}
-		r.appendEntries(m.Entries)
+		entries := []pb.Entry{}
+		for _, entry := range m.Entries {
+			entries = append(entries, *entry)
+		}
+		r.appendEntries(entries...)
 		r.bcastAppend()
 	case pb.MessageType_MsgHeartbeatResponse:
+		if pr.Match < r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		}
 	}
 	return nil
 }
@@ -531,17 +548,77 @@ func (r *Raft) reset(term uint64) {
 }
 
 func (r *Raft) send(m pb.Message) {
+	m.From = r.id
+	if m.MsgType == pb.MessageType_MsgRequestVote {
+		if m.Term == 0 {
+			log.Panicf("term should be set when sending %s", m.MsgType)
+		}
+	} else {
+		if m.Term != 0 {
+			log.Panicf("...")
+		}
+
+		if m.MsgType != pb.MessageType_MsgPropose {
+			m.Term = r.Term
+		}
+	}
 	r.msgs = append(r.msgs, m)
 }
 
-func (r *Raft) appendEntries(entries []*pb.Entry) {
-	for _, entry := range entries {
-		r.RaftLog.entries = append(r.RaftLog.entries, *entry)
+func (r *Raft) appendEntries(entries ...pb.Entry) {
+	li := r.RaftLog.LastIndex()
+	for i := range entries {
+		entries[i].Term = r.Term
+		entries[i].Index = li + 1 + uint64(i)
 	}
+	r.RaftLog.append(entries...)
+	lastIndex := r.RaftLog.LastIndex()
+	if r.Prs[r.id].Match < lastIndex {
+		r.Prs[r.id].Match = lastIndex
+	}
+	if r.Prs[r.id].Next < lastIndex+1 {
+		r.Prs[r.id].Next = lastIndex + 1
+	}
+	r.maybeCommit()
 }
 
 func (r *Raft) bcastAppend() {
 	for peerId, _ := range r.Prs {
 		r.sendAppend(peerId)
 	}
+}
+
+func (r *Raft) bcastHeartbeat() {
+	for peerId, _ := range r.Prs {
+		r.sendHeartbeat(peerId)
+	}
+}
+
+// 好聪明的办法呀，对所有的match排序，然后取中间的值即为达到半数的值
+func (r *Raft) maybeCommit() bool {
+	mis := make(uint64Slice, 0, len(r.Prs))
+	for id := range r.Prs {
+		mis = append(mis, r.Prs[id].Match)
+	}
+
+	sort.Sort(sort.Reverse(mis))
+	mci := mis[r.quorum()-1]
+	return r.RaftLog.maybeCommit(mci, r.Term)
+}
+
+func (r *Raft) quorum() int {
+	return len(r.Prs)/2 + 1
+}
+
+func (r *Raft) poll(id uint64, msgType pb.MessageType, v bool) (granted int) {
+	if _, ok := r.votes[id]; !ok {
+		r.votes[id] = v
+	}
+
+	for _, vv := range r.votes {
+		if vv {
+			granted++
+		}
+	}
+	return granted
 }

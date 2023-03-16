@@ -16,6 +16,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -59,9 +60,13 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return &RaftLog{
+	log := &RaftLog{
 		storage: storage,
 	}
+	firstIndex, _ := storage.FirstIndex()
+	log.committed = firstIndex - 1
+	log.applied = firstIndex - 1
+	return log
 }
 
 // We need to compact the log entries in some point of time like
@@ -115,6 +120,19 @@ func (l *RaftLog) LastIndex() uint64 {
 	if len(l.entries) > 0 {
 		return l.entries[len(l.entries)-1].Index
 	}
+	t, err := l.storage.LastIndex()
+	if err == nil {
+		return t
+	}
+	return 0
+}
+
+func (l *RaftLog) LastTerm() uint64 {
+	lastIndex := l.LastIndex()
+	lastTerm, err := l.Term(lastIndex)
+	if err == nil {
+		return lastTerm
+	}
 	return 0
 }
 
@@ -126,5 +144,56 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 			return entry.Term, nil
 		}
 	}
+
+	// 尝试从storage中获取对应的entry记录并返回其term值
+	t, err := l.storage.Term(i)
+	if err == nil {
+		return t, nil
+	}
 	return 0, fmt.Errorf("cannot find specify index")
+}
+
+func (l *RaftLog) matchTerm(i, term uint64) bool {
+	t, err := l.Term(i)
+	if err != nil {
+		return false
+	}
+	return t == term
+}
+
+func (l *RaftLog) append(entries ...pb.Entry) uint64 {
+	l.entries = append(l.entries, entries...)
+	return l.LastIndex()
+}
+
+func (l *RaftLog) commitTo(tocommit uint64) {
+	if l.committed < tocommit {
+		if l.LastIndex() < tocommit {
+			log.Panicf("lastIndex:%d is little than tocommit:%d", l.LastIndex(), tocommit)
+		}
+		l.committed = tocommit
+	}
+}
+
+// 相同term并且大于当前commit才可提交
+func (l *RaftLog) maybeCommit(maxIndex, term uint64) bool {
+	if maxIndex > l.committed && l.zeroTermOnErrCompacted(l.Term(maxIndex)) == term {
+		l.commitTo(maxIndex)
+		return true
+	}
+	return false
+}
+
+func (l *RaftLog) zeroTermOnErrCompacted(t uint64, err error) uint64 {
+	if err == nil {
+		return t
+	}
+	if err == ErrCompacted {
+		return 0
+	}
+	return 0
+}
+
+func (l *RaftLog) appliedTo(index uint64) {
+	l.applied = index
 }
