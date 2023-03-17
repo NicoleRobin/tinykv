@@ -153,6 +153,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	return 0, fmt.Errorf("cannot find specify index")
 }
 
+// matchTerm 判断Index和term是否匹配
 func (l *RaftLog) matchTerm(i, term uint64) bool {
 	t, err := l.Term(i)
 	if err != nil {
@@ -182,6 +183,57 @@ func (l *RaftLog) maybeCommit(maxIndex, term uint64) bool {
 		return true
 	}
 	return false
+}
+
+func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) (uint64, bool) {
+	if l.matchTerm(index, logTerm) {
+		lastnewi := index + uint64(len(ents))
+		ci := l.findConflict(ents)
+		switch {
+		case ci == 0:
+		case ci <= l.committed:
+			log.Panicf("entry %d conflict with committed entry [committed(%d)]", ci, l.committed)
+		default:
+			offset := index + 1
+			tmpEnts := []pb.Entry{}
+			for _, entry := range ents {
+				tmpEnts = append(tmpEnts, *entry)
+			}
+			l.append(tmpEnts[ci-offset:]...)
+		}
+		l.commitTo(min(committed, lastnewi))
+		return lastnewi, true
+	}
+	return 0, false
+}
+
+// findConflict 找到第一个term和index不匹配的entry
+func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {
+	for _, ne := range ents {
+		if !l.matchTerm(ne.Index, ne.Term) {
+			if ne.Index <= l.LastIndex() {
+				log.Infof("found conflict at index %d [existing term: %d, conflicting term: %d]",
+					ne.Index, l.zeroTermOnErrCompacted(l.Term(ne.Index)), ne.Term)
+			}
+			return ne.Index
+		}
+	}
+	return 0
+}
+
+func (l *RaftLog) findConflictByTerm(index, term uint64) uint64 {
+
+	if li := l.LastIndex(); index > li {
+		return index
+	}
+	for {
+		logTerm, err := l.Term(index)
+		if logTerm <= term || err != nil {
+			break
+		}
+		index--
+	}
+	return index
 }
 
 func (l *RaftLog) zeroTermOnErrCompacted(t uint64, err error) uint64 {

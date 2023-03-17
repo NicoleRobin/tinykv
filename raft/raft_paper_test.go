@@ -481,7 +481,7 @@ func TestLeaderAcknowledgeCommit2AB(t *testing.T) {
 		}
 
 		if g := r.RaftLog.committed > li; g != tt.wack {
-			t.Errorf("#%d: ack commit = %v, want %v", i, g, tt.wack)
+			t.Errorf("#%d: ack commit = %v, want %v, commited:%d, li:%d", i, g, tt.wack, r.RaftLog.committed, li)
 		}
 	}
 }

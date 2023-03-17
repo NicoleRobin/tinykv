@@ -200,6 +200,7 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	ents := r.RaftLog.unstableEntries()
+	log.Debugf("ents:%+v", ents)
 	if len(ents) > 0 {
 		mEnts := []*pb.Entry{}
 		for _, ent := range ents {
@@ -368,9 +369,9 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 	case pb.MessageType_MsgAppend:
-		if m.Term >= r.Term {
-			r.becomeFollower(m.Term, m.From)
-		}
+		r.electionElapsed = 0
+		r.Lead = m.From
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVote:
 		// #TODO: 怎么实现一个term之内只能投递一次呢？
 		// term在什么时候更新？vote在什么时候重置？
@@ -420,13 +421,14 @@ func (r *Raft) Step(m pb.Message) error {
 	case pb.MessageType_MsgAppendResponse:
 		// 更新进度
 		r.Prs[m.From].Match = m.Index
-		minMatch := m.Index
-		for _, progress := range r.Prs {
-			if progress.Match < minMatch {
-				minMatch = progress.Match
-			}
+		mis := make(uint64Slice, 0, len(r.Prs))
+		for id := range r.Prs {
+			mis = append(mis, r.Prs[id].Match)
 		}
-		r.RaftLog.committed = minMatch
+
+		sort.Sort(sort.Reverse(mis))
+		mci := mis[r.quorum()-1]
+		r.RaftLog.committed = mci
 	default:
 		log.Errorf("unknown msg type:%+v", m.MsgType)
 	}
@@ -501,7 +503,28 @@ func (r *Raft) isMajority() bool {
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
-	r.Step(m)
+	if m.Index < r.RaftLog.committed {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+		return
+	}
+
+	if mlastIndex, ok := r.RaftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries); ok {
+		r.send(pb.Message{To: m.From, MsgType: pb.MessageType_MsgAppendResponse, Index: mlastIndex})
+	} else {
+		hintIndex := min(m.Index, r.RaftLog.LastIndex())
+		hintIndex = r.RaftLog.findConflictByTerm(hintIndex, m.LogTerm)
+		hintTerm, err := r.RaftLog.Term(hintIndex)
+		if err != nil {
+			panic(fmt.Sprintf("term(%d) must be valid, but got %v", hintIndex, err))
+		}
+		r.send(pb.Message{
+			To:      m.From,
+			MsgType: pb.MessageType_MsgAppendResponse,
+			Index:   m.Index,
+			Reject:  true,
+			LogTerm: hintTerm,
+		})
+	}
 }
 
 // handleHeartbeat handle Heartbeat RPC request
@@ -586,12 +609,18 @@ func (r *Raft) appendEntries(entries ...pb.Entry) {
 
 func (r *Raft) bcastAppend() {
 	for peerId, _ := range r.Prs {
+		if peerId == r.id {
+			continue
+		}
 		r.sendAppend(peerId)
 	}
 }
 
 func (r *Raft) bcastHeartbeat() {
 	for peerId, _ := range r.Prs {
+		if peerId == r.id {
+			continue
+		}
 		r.sendHeartbeat(peerId)
 	}
 }
