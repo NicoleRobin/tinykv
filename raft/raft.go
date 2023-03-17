@@ -400,24 +400,23 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case pb.MessageType_MsgPropose:
 		// propose
-		for _, entry := range m.Entries {
-			entry.Term = r.Term
-			entry.Index = r.RaftLog.LastIndex() + 1
-			r.RaftLog.entries = append(r.RaftLog.entries, *entry)
-		}
-
-		if len(r.Prs) == 1 {
-			r.RaftLog.committed += uint64(len(m.Entries))
-		} else {
-			for peerId, progress := range r.Prs {
-				if peerId == r.id {
-					progress.Next = r.RaftLog.LastIndex()
-					continue
+		for i, entry := range m.Entries {
+			if entry.EntryType == pb.EntryType_EntryConfChange {
+				if r.PendingConfIndex > 0 {
+					m.Entries[i] = &pb.Entry{
+						EntryType: pb.EntryType_EntryNormal,
+					}
 				}
-				r.sendAppend(peerId)
-				progress.Next = r.RaftLog.LastIndex()
 			}
 		}
+
+		entries := []pb.Entry{}
+		for _, entry := range m.Entries {
+			entries = append(entries, *entry)
+		}
+		r.appendEntries(entries...)
+		r.bcastAppend()
+		return nil
 	case pb.MessageType_MsgAppendResponse:
 		// 更新进度
 		r.Prs[m.From].Match = m.Index
@@ -566,12 +565,15 @@ func (r *Raft) send(m pb.Message) {
 }
 
 func (r *Raft) appendEntries(entries ...pb.Entry) {
+	// 重新修正所有将要附加的entry的Index的值
 	li := r.RaftLog.LastIndex()
 	for i := range entries {
 		entries[i].Term = r.Term
 		entries[i].Index = li + 1 + uint64(i)
 	}
 	r.RaftLog.append(entries...)
+
+	// 修改当前节点的进度值
 	lastIndex := r.RaftLog.LastIndex()
 	if r.Prs[r.id].Match < lastIndex {
 		r.Prs[r.id].Match = lastIndex
