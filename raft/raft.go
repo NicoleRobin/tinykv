@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
+	"go.etcd.io/etcd/raft/quorum"
 	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -375,29 +376,25 @@ func (r *Raft) Step(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		// #TODO: 怎么实现一个term之内只能投递一次呢？
 		// term在什么时候更新？vote在什么时候重置？
-		if m.Term == r.Term {
-			if r.Vote == None {
-				r.becomeFollower(m.Term, m.From)
-				r.Vote = m.From
-				r.sendVoteResp(m.From, false)
-			} else if r.Vote == m.From {
-				r.sendVoteResp(m.From, false)
-			} else {
-				r.sendVoteResp(m.From, true)
-			}
-		} else if m.Term > r.Term {
-			r.becomeFollower(m.Term, m.From)
+		// 当发起投票的是已经投票过的节点或者还未投票而且没有Leader
+		canVote := r.Vote == m.From || (r.Vote == None && r.Lead == None)
+		if canVote {
+			r.electionElapsed = 0
 			r.Vote = m.From
 			r.sendVoteResp(m.From, false)
+		} else {
+			r.sendVoteResp(m.From, true)
 		}
 	case pb.MessageType_MsgRequestVoteResponse:
-		if r.State == StateCandidate {
-			r.votes[m.From] = !m.Reject
-		}
-
-		if r.isMajority() {
-			// 获得大多数投票，成为leader
+		gr, rj, res := r.poll(m.From, m.MsgType, !m.Reject)
+		switch res {
+		case quorum.VoteWon:
 			r.becomeLeader()
+			r.bcastAppend()
+		case quorum.VoteLost:
+			// pb.MsgPreVoteResp contains future term of pre-candidate
+			// m.Term > r.Term; reuse r.Term
+			r.becomeFollower(r.Term, None)
 		}
 	case pb.MessageType_MsgPropose:
 		// propose
