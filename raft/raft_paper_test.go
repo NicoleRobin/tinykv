@@ -27,6 +27,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	"reflect"
 	"sort"
 	"testing"
@@ -500,21 +501,30 @@ func TestLeaderCommitPrecedingEntries2AB(t *testing.T) {
 	}
 	for i, tt := range tests {
 		storage := NewMemoryStorage()
-		storage.Append(tt)
+		err := storage.Append(tt)
+		if err != nil {
+			log.Fatalf("storage.Append() failed, err:%s", err)
+		}
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
 		r.Term = 2
 		r.becomeCandidate()
 		r.becomeLeader()
-		r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+		err = r.Step(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgPropose, Entries: []*pb.Entry{{Data: []byte("some data")}}})
+		if err != nil {
+			log.Fatalf("storage.Append() failed, err:%s", err)
+		}
 
 		for _, m := range r.readMessages() {
-			r.Step(acceptAndReply(m))
+			err := r.Step(acceptAndReply(m))
+			if err != nil {
+				log.Fatalf("storage.Append() failed, err:%s", err)
+			}
 		}
 
 		li := uint64(len(tt))
 		wents := append(tt, pb.Entry{Term: 3, Index: li + 1}, pb.Entry{Term: 3, Index: li + 2, Data: []byte("some data")})
 		if g := r.RaftLog.nextEnts(); !reflect.DeepEqual(g, wents) {
-			t.Errorf("#%d: ents = %+v, want %+v", i, g, wents)
+			t.Errorf("#%d: ents = %+v\nwant %+v", i, g, wents)
 		}
 	}
 }
@@ -671,7 +681,7 @@ func TestFollowerAppendEntries2AB(t *testing.T) {
 			wents = append(wents, *ent)
 		}
 		if g := r.RaftLog.allEntries(); !reflect.DeepEqual(g, wents) {
-			t.Errorf("#%d: ents = %+v, want %+v", i, g, wents)
+			t.Errorf("#%d: ents = %+v\nwant %+v", i, g, wents)
 		}
 		var wunstable []pb.Entry
 		if tt.wunstable != nil {

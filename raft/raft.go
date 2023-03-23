@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
-	"go.etcd.io/etcd/raft/quorum"
 	"sort"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -339,7 +338,7 @@ func (r *Raft) Step(m pb.Message) error {
 			r.becomeCandidate()
 			term = r.Term
 
-			if r.quorum() == r.poll(r.id, pb.MessageType_MsgRequestVoteResponse, true) {
+			if r.quorum() == r.poll(r.id, true) {
 				r.becomeLeader()
 				return nil
 			}
@@ -386,14 +385,11 @@ func (r *Raft) Step(m pb.Message) error {
 			r.sendVoteResp(m.From, true)
 		}
 	case pb.MessageType_MsgRequestVoteResponse:
-		gr, rj, res := r.poll(m.From, m.MsgType, !m.Reject)
-		switch res {
-		case quorum.VoteWon:
+		granted := r.poll(m.From, !m.Reject)
+		if granted >= r.quorum() {
 			r.becomeLeader()
 			r.bcastAppend()
-		case quorum.VoteLost:
-			// pb.MsgPreVoteResp contains future term of pre-candidate
-			// m.Term > r.Term; reuse r.Term
+		} else {
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MessageType_MsgPropose:
@@ -408,7 +404,7 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 
-		entries := []pb.Entry{}
+		var entries []pb.Entry
 		for _, entry := range m.Entries {
 			entries = append(entries, *entry)
 		}
@@ -447,7 +443,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 			if entry.EntryType == pb.EntryType_EntryConfChange {
 			}
 		}
-		entries := []pb.Entry{}
+		var entries []pb.Entry
 		for _, entry := range m.Entries {
 			entries = append(entries, *entry)
 		}
@@ -638,11 +634,12 @@ func (r *Raft) quorum() int {
 	return len(r.Prs)/2 + 1
 }
 
-func (r *Raft) poll(id uint64, msgType pb.MessageType, v bool) (granted int) {
+func (r *Raft) poll(id uint64, v bool) int {
 	if _, ok := r.votes[id]; !ok {
 		r.votes[id] = v
 	}
 
+	granted := 0
 	for _, vv := range r.votes {
 		if vv {
 			granted++

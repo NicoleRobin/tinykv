@@ -81,10 +81,22 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	result := []pb.Entry{}
+	var result []pb.Entry
 	// filter dummy entry
+	firstIndex, _ := l.storage.FirstIndex()
+	lastIndex, _ := l.storage.LastIndex()
+	sEntries, err := l.storage.Entries(firstIndex, lastIndex+1)
+	if err != nil {
+		panic(err)
+	}
+	result = append(result, sEntries...)
 	for _, entry := range l.entries {
 		result = append(result, entry)
+	}
+	for _, entry := range result {
+		if entry.Data == nil {
+			continue
+		}
 	}
 	return result
 }
@@ -104,7 +116,22 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	result := []pb.Entry{}
+	var result []pb.Entry
+	firstIndex, _ := l.storage.FirstIndex()
+	lastIndex, _ := l.storage.LastIndex()
+	if l.applied+1 > firstIndex {
+		firstIndex = l.applied + 1
+	}
+	if l.committed < lastIndex {
+		lastIndex = l.committed
+	}
+	if l.applied < firstIndex && firstIndex <= lastIndex {
+		storageEntries, err := l.storage.Entries(firstIndex, lastIndex+1)
+		if err != nil {
+			panic(err)
+		}
+		result = append(result, storageEntries...)
+	}
 	for _, entry := range l.entries {
 		if entry.GetIndex() > l.applied && entry.GetIndex() <= l.committed {
 			result = append(result, entry)
@@ -163,7 +190,17 @@ func (l *RaftLog) matchTerm(i, term uint64) bool {
 }
 
 func (l *RaftLog) append(entries ...pb.Entry) uint64 {
-	l.entries = append(l.entries, entries...)
+	after := entries[0].Index
+	switch {
+	case after == u.offset+uint64(len(l.entries)):
+		l.entries = append(l.entries, entries...)
+	case after <= u.offset:
+		u.offset = after
+		l.entries = entries
+	default:
+		l.entries = append([]pb.Entry{}, u.slice(u.offset, after)...)
+		l.entries = append(l.entries, entries...)
+	}
 	return l.LastIndex()
 }
 
@@ -185,9 +222,9 @@ func (l *RaftLog) maybeCommit(maxIndex, term uint64) bool {
 	return false
 }
 
-func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) (uint64, bool) {
+func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents []*pb.Entry) (lastnewi uint64, ok bool) {
 	if l.matchTerm(index, logTerm) {
-		lastnewi := index + uint64(len(ents))
+		lastnewi = index + uint64(len(ents))
 		ci := l.findConflict(ents)
 		switch {
 		case ci == 0:
@@ -207,7 +244,7 @@ func (l *RaftLog) maybeAppend(index, logTerm, committed uint64, ents []*pb.Entry
 	return 0, false
 }
 
-// findConflict 找到第一个term和index不匹配的entry
+// findConflict 找到第一个term和index不匹配的entry并返回其Index
 func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {
 	for _, ne := range ents {
 		if !l.matchTerm(ne.Index, ne.Term) {
@@ -222,7 +259,6 @@ func (l *RaftLog) findConflict(ents []*pb.Entry) uint64 {
 }
 
 func (l *RaftLog) findConflictByTerm(index, term uint64) uint64 {
-
 	if li := l.LastIndex(); index > li {
 		return index
 	}
