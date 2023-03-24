@@ -691,7 +691,7 @@ func TestFollowerAppendEntries2AB(t *testing.T) {
 			wunstable = append(wunstable, *ent)
 		}
 		if g := r.RaftLog.unstableEntries(); !reflect.DeepEqual(g, wunstable) {
-			t.Errorf("#%d: unstableEnts = %+v, want %+v", i, g, wunstable)
+			t.Errorf("#%d: unstableEnts = %+v\nwant %+v", i, g, wunstable)
 		}
 	}
 }

@@ -64,6 +64,9 @@ func newLog(storage Storage) *RaftLog {
 		storage: storage,
 	}
 	firstIndex, _ := storage.FirstIndex()
+	lastIndex, _ := storage.LastIndex()
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+	log.entries = append(log.entries, entries...)
 	log.committed = firstIndex - 1
 	log.applied = firstIndex - 1
 	return log
@@ -83,13 +86,6 @@ func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
 	var result []pb.Entry
 	// filter dummy entry
-	firstIndex, _ := l.storage.FirstIndex()
-	lastIndex, _ := l.storage.LastIndex()
-	sEntries, err := l.storage.Entries(firstIndex, lastIndex+1)
-	if err != nil {
-		panic(err)
-	}
-	result = append(result, sEntries...)
 	for _, entry := range l.entries {
 		result = append(result, entry)
 	}
@@ -189,16 +185,18 @@ func (l *RaftLog) matchTerm(i, term uint64) bool {
 	return t == term
 }
 
+// append 将entries附加到raftlog中，但是需要处理冲突的问题
 func (l *RaftLog) append(entries ...pb.Entry) uint64 {
 	after := entries[0].Index
 	switch {
-	case after == u.offset+uint64(len(l.entries)):
+	case after == l.LastIndex()+1:
 		l.entries = append(l.entries, entries...)
-	case after <= u.offset:
-		u.offset = after
-		l.entries = entries
+	case after <= l.stabled:
+		l.entries = l.entries[:l.stabled]
+		l.stabled = after
+		l.entries = append(l.entries, entries...)
 	default:
-		l.entries = append([]pb.Entry{}, u.slice(u.offset, after)...)
+		l.entries = l.entries[:after]
 		l.entries = append(l.entries, entries...)
 	}
 	return l.LastIndex()
